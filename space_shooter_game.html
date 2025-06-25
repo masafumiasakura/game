@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Space Shooter</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+            color: white;
+        }
+        canvas {
+            border: 2px solid #444;
+            background: linear-gradient(180deg, #001122 0%, #000033 100%);
+        }
+        .ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 18px;
+            z-index: 10;
+        }
+        .controls {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            text-align: center;
+            font-size: 14px;
+            opacity: 0.8;
+        }
+        .game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            font-size: 24px;
+            background: rgba(0,0,0,0.8);
+            padding: 30px;
+            border-radius: 10px;
+            border: 2px solid #444;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <div class="ui">
+        <div>スコア: <span id="score">0</span></div>
+        <div>ライフ: <span id="lives">3</span></div>
+    </div>
+    <div class="controls">
+        矢印キー: 移動 | スペースキー: 攻撃 | R: リスタート
+    </div>
+    <div id="gameOver" class="game-over" style="display: none;">
+        <h2>ゲームオーバー</h2>
+        <p>最終スコア: <span id="finalScore">0</span></p>
+        <p>Rキーでリスタート</p>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // ゲーム状態
+        let gameState = {
+            score: 0,
+            lives: 3,
+            gameOver: false,
+            keys: {},
+            lastTime: 0
+        };
+
+        // プレイヤー
+        const player = {
+            x: 50,
+            y: canvas.height / 2,
+            width: 50,
+            height: 35,
+            speed: 5,
+            color: '#00ff00',
+            thrusterOffset: 0
+        };
+
+        // 弾丸配列
+        let bullets = [];
+        let enemies = [];
+        let particles = [];
+
+        // 星の背景
+        let stars = [];
+        for (let i = 0; i < 100; i++) {
+            stars.push({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                size: Math.random() * 2 + 1,
+                speed: Math.random() * 2 + 1
+            });
+        }
+
+        // キーボードイベント
+        document.addEventListener('keydown', (e) => {
+            gameState.keys[e.code] = true;
+            if (e.code === 'Space') {
+                e.preventDefault();
+                if (!gameState.gameOver) {
+                    shoot();
+                }
+            }
+            if (e.code === 'KeyR') {
+                restartGame();
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            gameState.keys[e.code] = false;
+        });
+
+        // 弾丸発射
+        function shoot() {
+            bullets.push({
+                x: player.x + player.width,
+                y: player.y + player.height / 2,
+                width: 8,
+                height: 3,
+                speed: 8,
+                color: '#ffff00'
+            });
+        }
+
+        // 敵の種類定義
+        const enemyTypes = {
+            basic: {
+                width: 35, height: 25, speed: 3, hp: 1, score: 10,
+                color: '#ff0000', secondaryColor: '#aa0000'
+            },
+            fast: {
+                width: 25, height: 20, speed: 6, hp: 1, score: 15,
+                color: '#ff6600', secondaryColor: '#cc4400'
+            },
+            heavy: {
+                width: 45, height: 35, speed: 1.5, hp: 3, score: 30,
+                color: '#8800ff', secondaryColor: '#6600cc'
+            },
+            zigzag: {
+                width: 30, height: 22, speed: 2.5, hp: 2, score: 20,
+                color: '#00ffff', secondaryColor: '#0088cc',
+                pattern: 'zigzag', zigzagTimer: 0, zigzagDirection: 1
+            },
+            shooter: {
+                width: 40, height: 28, speed: 2, hp: 2, score: 25,
+                color: '#ffff00', secondaryColor: '#cccc00',
+                lastShot: 0, shootInterval: 120
+            }
+        };
+
+        let enemyBullets = [];
+
+        // 敵生成
+        function spawnEnemy() {
+            if (Math.random() < 0.025) {
+                const rand = Math.random();
+                let type;
+                
+                if (rand < 0.4) type = 'basic';
+                else if (rand < 0.6) type = 'fast';
+                else if (rand < 0.75) type = 'heavy';
+                else if (rand < 0.9) type = 'zigzag';
+                else type = 'shooter';
+                
+                const template = enemyTypes[type];
+                const enemy = {
+                    x: canvas.width,
+                    y: Math.random() * (canvas.height - template.height),
+                    width: template.width,
+                    height: template.height,
+                    speed: template.speed + Math.random() * 1,
+                    maxHp: template.hp,
+                    hp: template.hp,
+                    score: template.score,
+                    color: template.color,
+                    secondaryColor: template.secondaryColor,
+                    type: type
+                };
+                
+                // 特殊パターンの初期化
+                if (type === 'zigzag') {
+                    enemy.zigzagTimer = 0;
+                    enemy.zigzagDirection = Math.random() > 0.5 ? 1 : -1;
+                } else if (type === 'shooter') {
+                    enemy.lastShot = 0;
+                }
+                
+                enemies.push(enemy);
+            }
+        }
+
+        // パーティクル生成
+        function createParticles(x, y, color) {
+            for (let i = 0; i < 8; i++) {
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 6,
+                    vy: (Math.random() - 0.5) * 6,
+                    life: 30,
+                    maxLife: 30,
+                    color: color
+                });
+            }
+        }
+
+        // プレイヤー移動
+        function updatePlayer() {
+            if (gameState.keys['ArrowUp'] && player.y > 0) {
+                player.y -= player.speed;
+            }
+            if (gameState.keys['ArrowDown'] && player.y < canvas.height - player.height) {
+                player.y += player.speed;
+            }
+            if (gameState.keys['ArrowLeft'] && player.x > 0) {
+                player.x -= player.speed;
+            }
+            if (gameState.keys['ArrowRight'] && player.x < canvas.width - player.width) {
+                player.x += player.speed;
+            }
+        }
+
+        // 弾丸更新
+        function updateBullets() {
+            bullets = bullets.filter(bullet => {
+                bullet.x += bullet.speed;
+                return bullet.x < canvas.width;
+            });
+        }
+
+        // 敵更新
+        function updateEnemies() {
+            enemies = enemies.filter(enemy => {
+                enemy.x -= enemy.speed;
+                
+                // 特殊な動きパターン
+                if (enemy.type === 'zigzag') {
+                    enemy.zigzagTimer++;
+                    if (enemy.zigzagTimer % 30 === 0) {
+                        enemy.zigzagDirection *= -1;
+                    }
+                    enemy.y += enemy.zigzagDirection * 2;
+                    
+                    // 画面端での反転
+                    if (enemy.y <= 0 || enemy.y >= canvas.height - enemy.height) {
+                        enemy.zigzagDirection *= -1;
+                    }
+                } else if (enemy.type === 'shooter') {
+                    enemy.lastShot++;
+                    if (enemy.lastShot >= enemy.shootInterval && enemy.x < canvas.width - 100) {
+                        // 敵弾丸発射
+                        enemyBullets.push({
+                            x: enemy.x,
+                            y: enemy.y + enemy.height / 2,
+                            width: 6,
+                            height: 3,
+                            speed: -4,
+                            color: '#ff8800'
+                        });
+                        enemy.lastShot = 0;
+                    }
+                }
+                
+                return enemy.x > -enemy.width;
+            });
+        }
+
+        // 敵弾丸更新
+        function updateEnemyBullets() {
+            enemyBullets = enemyBullets.filter(bullet => {
+                bullet.x += bullet.speed;
+                return bullet.x > 0;
+            });
+        }
+
+        // パーティクル更新
+        function updateParticles() {
+            particles = particles.filter(particle => {
+                particle.x += particle.vx;
+                particle.y += particle.vy;
+                particle.life--;
+                return particle.life > 0;
+            });
+        }
+
+        // 当たり判定
+        function checkCollisions() {
+            // 弾丸と敵の当たり判定
+            bullets.forEach((bullet, bulletIndex) => {
+                enemies.forEach((enemy, enemyIndex) => {
+                    if (bullet.x < enemy.x + enemy.width &&
+                        bullet.x + bullet.width > enemy.x &&
+                        bullet.y < enemy.y + enemy.height &&
+                        bullet.y + bullet.height > enemy.y) {
+                        
+                        enemy.hp--;
+                        bullets.splice(bulletIndex, 1);
+                        
+                        if (enemy.hp <= 0) {
+                            // 爆発エフェクト
+                            createParticles(enemy.x + enemy.width/2, enemy.y + enemy.height/2, enemy.color);
+                            enemies.splice(enemyIndex, 1);
+                            gameState.score += enemy.score;
+                        } else {
+                            // ダメージエフェクト
+                            createParticles(enemy.x + enemy.width/2, enemy.y + enemy.height/2, '#ffffff');
+                        }
+                        updateUI();
+                    }
+                });
+            });
+
+            // プレイヤーと敵の当たり判定
+            enemies.forEach((enemy, enemyIndex) => {
+                if (player.x < enemy.x + enemy.width &&
+                    player.x + player.width > enemy.x &&
+                    player.y < enemy.y + enemy.height &&
+                    player.y + player.height > enemy.y) {
+                    
+                    // 爆発エフェクト
+                    createParticles(enemy.x + enemy.width/2, enemy.y + enemy.height/2, enemy.color);
+                    
+                    enemies.splice(enemyIndex, 1);
+                    gameState.lives--;
+                    updateUI();
+                    
+                    if (gameState.lives <= 0) {
+                        gameOver();
+                    }
+                }
+            });
+            
+            // プレイヤーと敵弾丸の当たり判定
+            enemyBullets.forEach((bullet, bulletIndex) => {
+                if (bullet.x < player.x + player.width &&
+                    bullet.x + bullet.width > player.x &&
+                    bullet.y < player.y + player.height &&
+                    bullet.y + bullet.height > player.y) {
+                    
+                    enemyBullets.splice(bulletIndex, 1);
+                    gameState.lives--;
+                    createParticles(player.x + player.width/2, player.y + player.height/2, '#00ff00');
+                    updateUI();
+                    
+                    if (gameState.lives <= 0) {
+                        gameOver();
+                    }
+                }
+            });
+        }
+
+        // 星の背景更新
+        function updateStars() {
+            stars.forEach(star => {
+                star.x -= star.speed;
+                if (star.x < 0) {
+                    star.x = canvas.width;
+                    star.y = Math.random() * canvas.height;
+                }
+            });
+        }
+
+        // 描画関数
+        // 描画関数
+        function drawPlayer() {
+            const time = Date.now() * 0.01;
+            player.thrusterOffset = Math.sin(time) * 2;
+            
+            // メイン機体（濃い緑）
+            ctx.fillStyle = '#006600';
+            ctx.fillRect(player.x + 8, player.y + 8, 34, 19);
+            
+            // コックピット（明るい緑）
+            ctx.fillStyle = '#00ff00';
+            ctx.fillRect(player.x + 15, player.y + 10, 20, 15);
+            
+            // 翼
+            ctx.fillStyle = '#004400';
+            ctx.fillRect(player.x + 5, player.y + 5, 8, 8);
+            ctx.fillRect(player.x + 5, player.y + 22, 8, 8);
+            ctx.fillRect(player.x + 37, player.y + 12, 8, 8);
+            
+            // 砲身
+            ctx.fillStyle = '#888888';
+            ctx.fillRect(player.x + 45, player.y + 15, 8, 5);
+            
+            // エンジンの噴射炎
+            ctx.fillStyle = '#ff4400';
+            ctx.fillRect(player.x - 5 + player.thrusterOffset, player.y + 12, 8, 4);
+            ctx.fillRect(player.x - 5 + player.thrusterOffset, player.y + 19, 8, 4);
+            ctx.fillStyle = '#ffff00';
+            ctx.fillRect(player.x - 3 + player.thrusterOffset, player.y + 13, 4, 2);
+            ctx.fillRect(player.x - 3 + player.thrusterOffset, player.y + 20, 4, 2);
+            
+            // コックピットの窓
+            ctx.fillStyle = '#88ffff';
+            ctx.fillRect(player.x + 18, player.y + 13, 14, 9);
+            
+            // 装甲のライン
+            ctx.fillStyle = '#00aa00';
+            ctx.fillRect(player.x + 10, player.y + 6, 2, 23);
+            ctx.fillRect(player.x + 40, player.y + 6, 2, 23);
+        }
+
+        function drawBullets() {
+            bullets.forEach(bullet => {
+                ctx.fillStyle = bullet.color;
+                ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
+            });
+        }
+
+        function drawEnemies() {
+            enemies.forEach(enemy => {
+                // HPに応じたダメージ表現
+                const damageAlpha = enemy.hp / enemy.maxHp;
+                
+                if (enemy.type === 'basic') {
+                    // 基本敵機
+                    ctx.globalAlpha = damageAlpha;
+                    ctx.fillStyle = enemy.color;
+                    ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
+                    ctx.fillStyle = enemy.secondaryColor;
+                    ctx.fillRect(enemy.x + 5, enemy.y + 5, 25, 15);
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(enemy.x, enemy.y + 10, 8, 5);
+                    
+                } else if (enemy.type === 'fast') {
+                    // 高速敵機（三角形）
+                    ctx.globalAlpha = damageAlpha;
+                    ctx.fillStyle = enemy.color;
+                    ctx.beginPath();
+                    ctx.moveTo(enemy.x, enemy.y + enemy.height/2);
+                    ctx.lineTo(enemy.x + enemy.width, enemy.y);
+                    ctx.lineTo(enemy.x + enemy.width, enemy.y + enemy.height);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.fillStyle = enemy.secondaryColor;
+                    ctx.fillRect(enemy.x + 5, enemy.y + 7, 15, 6);
+                    
+                } else if (enemy.type === 'heavy') {
+                    // 重装甲敵機
+                    ctx.globalAlpha = damageAlpha;
+                    ctx.fillStyle = enemy.color;
+                    ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
+                    ctx.fillStyle = enemy.secondaryColor;
+                    ctx.fillRect(enemy.x + 5, enemy.y + 5, 35, 25);
+                    // 装甲プレート
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(enemy.x + 2, enemy.y + 2, 4, 31);
+                    ctx.fillRect(enemy.x + 8, enemy.y + 2, 4, 31);
+                    ctx.fillRect(enemy.x + 14, enemy.y + 2, 4, 31);
+                    
+                } else if (enemy.type === 'zigzag') {
+                    // ジグザグ敵機
+                    ctx.globalAlpha = damageAlpha;
+                    ctx.fillStyle = enemy.color;
+                    ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
+                    ctx.fillStyle = enemy.secondaryColor;
+                    // 波型の装飾
+                    ctx.fillRect(enemy.x + 5, enemy.y + 3, 20, 4);
+                    ctx.fillRect(enemy.x + 5, enemy.y + 9, 20, 4);
+                    ctx.fillRect(enemy.x + 5, enemy.y + 15, 20, 4);
+                    
+                } else if (enemy.type === 'shooter') {
+                    // 射撃敵機
+                    ctx.globalAlpha = damageAlpha;
+                    ctx.fillStyle = enemy.color;
+                    ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
+                    ctx.fillStyle = enemy.secondaryColor;
+                    ctx.fillRect(enemy.x + 5, enemy.y + 5, 30, 18);
+                    // 砲塔
+                    ctx.fillStyle = '#ff0000';
+                    ctx.fillRect(enemy.x - 5, enemy.y + 12, 10, 4);
+                }
+                
+                ctx.globalAlpha = 1;
+                
+                // HPバー表示（重装甲敵のみ）
+                if (enemy.type === 'heavy' && enemy.hp < enemy.maxHp) {
+                    const barWidth = 30;
+                    const hpRatio = enemy.hp / enemy.maxHp;
+                    ctx.fillStyle = '#ff0000';
+                    ctx.fillRect(enemy.x + 7, enemy.y - 8, barWidth, 3);
+                    ctx.fillStyle = '#00ff00';
+                    ctx.fillRect(enemy.x + 7, enemy.y - 8, barWidth * hpRatio, 3);
+                }
+            });
+        }
+
+        function drawEnemyBullets() {
+            enemyBullets.forEach(bullet => {
+                ctx.fillStyle = bullet.color;
+                ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
+            });
+        }
+
+        function drawParticles() {
+            particles.forEach(particle => {
+                const alpha = particle.life / particle.maxLife;
+                ctx.globalAlpha = alpha;
+                ctx.fillStyle = particle.color;
+                ctx.fillRect(particle.x, particle.y, 3, 3);
+                ctx.globalAlpha = 1;
+            });
+        }
+
+        function drawStars() {
+            ctx.fillStyle = '#ffffff';
+            stars.forEach(star => {
+                ctx.globalAlpha = 0.8;
+                ctx.fillRect(star.x, star.y, star.size, star.size);
+                ctx.globalAlpha = 1;
+            });
+        }
+
+        function updateUI() {
+            document.getElementById('score').textContent = gameState.score;
+            document.getElementById('lives').textContent = gameState.lives;
+        }
+
+        function gameOver() {
+            gameState.gameOver = true;
+            document.getElementById('finalScore').textContent = gameState.score;
+            document.getElementById('gameOver').style.display = 'block';
+        }
+
+        function restartGame() {
+            gameState = {
+                score: 0,
+                lives: 3,
+                gameOver: false,
+                keys: {},
+                lastTime: 0
+            };
+            
+            player.x = 50;
+            player.y = canvas.height / 2;
+            bullets = [];
+            enemies = [];
+            enemyBullets = [];
+            particles = [];
+            
+            document.getElementById('gameOver').style.display = 'none';
+            updateUI();
+        }
+
+        // メインゲームループ
+        function gameLoop(currentTime) {
+            if (!gameState.gameOver) {
+                // 背景をクリア
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                // 更新
+                updateStars();
+                updatePlayer();
+                updateBullets();
+                updateEnemies();
+                updateEnemyBullets();
+                updateParticles();
+                spawnEnemy();
+                checkCollisions();
+                
+                // 描画
+                drawStars();
+                drawPlayer();
+                drawBullets();
+                drawEnemies();
+                drawEnemyBullets();
+                drawParticles();
+            }
+            
+            requestAnimationFrame(gameLoop);
+        }
+
+        // ゲーム開始
+        updateUI();
+        gameLoop();
+    </script>
+</body>
+</html>
